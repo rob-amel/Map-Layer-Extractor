@@ -6,7 +6,7 @@ import geopandas as gpd
 import json
 import tempfile
 import zipfile
-from streamlit_option_menu import option_menu # Necessario per il menu a schede
+# Rimosso: from streamlit_option_menu import option_menu 
 
 # --- CONFIGURAZIONE E STILE ---
 
@@ -18,14 +18,14 @@ st.set_page_config(page_title="🗺️ Vector Data Extractor GIS", layout="wide"
 
 def vector_extractor_app():
     
-    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V3)")
+    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V4)")
     st.subheader("Scegli se scaricare da URL o caricare un file JSON/GeoJSON locale per la conversione.")
     st.markdown("---")
 
     # --- INPUT DATI (URL O FILE UPLOAD) ---
     st.header("1. 🔗 Sorgente Dati")
     
-    # Menu a schede per scegliere la sorgente
+    # Sostituito st.radio per rimuovere la dipendenza 'streamlit_option_menu'
     source_method = st.radio(
         "Seleziona il metodo di input:",
         options=["URL Diretto", "Carica File Locale"],
@@ -110,27 +110,41 @@ def vector_extractor_app():
             with st.spinner(f"Inizio l'elaborazione del layer '{feature_name}'..."):
                 
                 base_filename = feature_name
-                data_source = None
+                raw_data_buffer = None
                 
                 # --- FASE 1: ACQUISIZIONE DATI (URL o FILE) ---
                 if source_method == "URL Diretto":
-                    st.info("Passaggio 1/4: Scarico i dati dall'URL...")
-                    data_source = url_endpoint
+                    st.info("Passaggio 1/4: Scarico i dati dall'URL in memoria...")
+                    try:
+                        # Scarica il contenuto in memoria
+                        response = requests.get(url_endpoint)
+                        response.raise_for_status() 
+                        # Crea un buffer BytesIO dal contenuto del download
+                        raw_data_buffer = io.BytesIO(response.content)
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"❌ Errore durante il download dell'URL: {e}. Il server potrebbe non aver risposto.")
+                        return
+                
                 elif source_method == "Carica File Locale" and uploaded_file is not None:
                     st.info("Passaggio 1/4: Lettura del file caricato...")
-                    # GeoPandas può leggere direttamente dal buffer BytesIO
-                    data_source = io.BytesIO(uploaded_file.read())
+                    # Crea un buffer BytesIO dal file caricato
+                    raw_data_buffer = io.BytesIO(uploaded_file.read())
                 
-                if data_source is None:
+                if raw_data_buffer is None:
                     st.error("❌ Nessuna sorgente dati valida fornita.")
                     return
 
-                # --- FASE 2: CARICAMENTO E FILTRAGGIO GIS (gpd.read_file è robusto) ---
+                # --- FASE 2: CARICAMENTO E FILTRAGGIO GIS (Lettura robusta dal buffer) ---
                 try:
                     st.info("Passaggio 2/4: Caricamento e filtraggio dei dati...")
                     
-                    # Utilizza gpd.read_file, che supporta sia URL che buffer/percorsi
-                    gdf = gpd.read_file(data_source)
+                    # 1. Resetta il cursore del buffer prima della lettura
+                    raw_data_buffer.seek(0)
+                    
+                    # 2. Utilizza gpd.read_file dal buffer. 
+                    # Questo è MOLTO più affidabile rispetto a gpd.read_file(url)
+                    # e permette a Fiona/GDAL di interpretare tutti i formati supportati.
+                    gdf = gpd.read_file(raw_data_buffer)
 
                     # Filtro geografico (Bounding Box)
                     gdf_filtered = gdf.cx[bbox_min_lon:bbox_max_lon, bbox_min_lat:bbox_max_lat]
@@ -147,11 +161,12 @@ def vector_extractor_app():
 
                 except Exception as e:
                     st.error(f"❌ Errore durante il caricamento o il filtraggio GIS: GeoPandas non è riuscito a interpretare il formato del dato. Dettagli: {e}")
-                    st.warning("Se hai usato un URL, prova a scaricare il JSON manualmente (F12) e a caricarlo come file locale.")
+                    st.warning("Verifica che il contenuto sia un JSON vettoriale valido (GeoJSON, TopoJSON o formato proprietario supportato da GDAL).")
                     return
 
                 # --- FASE 3: SALVATAGGIO IN MEMORIA (BUFFER) E PREPARAZIONE DOWNLOAD ---
                 
+                # ... (Il codice di salvataggio in Shapefile, GeoPackage, GeoJSON e CSV rimane invariato) ...
                 download_data = None
                 mime_type = "application/octet-stream"
                 label = f"Scarica {base_filename}"
@@ -218,6 +233,7 @@ def vector_extractor_app():
                 st.markdown("#### Parametri di Estrazione Eseguiti")
                 st.json({
                     "sorgente_utilizzata": source_method,
+                    "url_o_file": url_endpoint if url_endpoint else "File Caricato",
                     "layer_output": base_filename,
                     "bbox_filtro_wgs84": f"{bbox_min_lon}, {bbox_min_lat}, {bbox_max_lon}, {bbox_max_lat}",
                     "formato_output": output_format,
