@@ -6,7 +6,7 @@ import geopandas as gpd
 import json
 import tempfile
 import zipfile
-# Nessuna dipendenza 'streamlit_option_menu'
+# Nessuna dipendenza esterna oltre le basi
 
 # --- CONFIGURAZIONE E STILE ---
 
@@ -18,7 +18,7 @@ st.set_page_config(page_title="🗺️ Vector Data Extractor GIS", layout="wide"
 
 def vector_extractor_app():
     
-    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V5)")
+    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V6)")
     st.subheader("Massima compatibilità JSON: Carica da URL o file locale e converti.")
     st.markdown("---")
 
@@ -105,9 +105,9 @@ def vector_extractor_app():
             with st.spinner(f"Inizio l'elaborazione del layer '{feature_name}'..."):
                 
                 base_filename = feature_name
-                json_data = None # Conterrà l'oggetto JSON Python
+                json_data = None 
                 
-                # --- FASE 1: ACQUISIZIONE DATI E PARSING IN JSON (PIÙ ROBUSTO) ---
+                # --- FASE 1: ACQUISIZIONE DATI E PARSING IN JSON ---
                 try:
                     st.info("Passaggio 1/4: Acquisizione dei dati...")
                     
@@ -135,30 +135,32 @@ def vector_extractor_app():
                     
                     final_geojson_content = None
 
-                    # Tenta di gestire il JSON ArcGIS (comune per gli URL che fornisci)
-                    # Spesso il payload GeoJSON o Esri è annidato sotto chiavi come 'data'
                     if isinstance(json_data, dict):
                         
                         # Tentativo 1: GeoJSON standard
                         if json_data.get('type') == 'FeatureCollection' or 'features' in json_data:
                             final_geojson_content = json_data
                             
-                        # Tentativo 2: Formato Esri ArcGIS (controlla la chiave 'featureSet', 'operationalLayers', etc.)
+                        # Tentativo 2: JSON Annidato (CASO SPECIFICO: geoData)
+                        elif 'geoData' in json_data and isinstance(json_data['geoData'], list):
+                            st.warning("JSON identificato con chiave 'geoData'. Sto incapsulando la lista in un GeoJSON Collection.")
+                            # Assumiamo che 'geoData' sia una lista di Feature GeoJSON
+                            final_geojson_content = {"type": "FeatureCollection", "features": json_data['geoData']}
+                            
+                        # Tentativo 3: Formato ArcGIS Esri (comune per il primo URL fornito)
                         elif 'featureSet' in json_data and 'features' in json_data['featureSet']:
-                             # Molto specifico per alcuni output ArcGIS
                             st.warning("JSON identificato come formato ArcGIS. Estraggo le feature.")
-                            final_geojson_content = json_data['featureSet']
+                            final_geojson_content = {"type": "FeatureCollection", "features": json_data['featureSet']['features']}
                             
                         elif 'features' in json_data and not json_data.get('type'):
-                             # A volte è solo un array di feature non incapsulato in FeatureCollection
+                            st.warning("JSON identificato come lista di Feature non incapsulata. Aggiungo FeatureCollection.")
                             final_geojson_content = {"type": "FeatureCollection", "features": json_data['features']}
 
                     if final_geojson_content is None:
-                        st.error("❌ Formato JSON non riconosciuto come GeoJSON/Esri. Il JSON non contiene la chiave 'features' o 'FeatureCollection' in una posizione standard.")
-                        return
+                        st.error("❌ Formato JSON non riconosciuto. Il JSON non contiene 'features' in una posizione standard o sotto la chiave 'geoData'.")
+                        st.stop()
 
                     # Carica il GeoJSON pulito in memoria (buffer)
-                    # Questo passaggio è FONDAMENTALE per garantire che GeoPandas non usi vsicurl
                     json_string = json.dumps(final_geojson_content)
                     raw_data_buffer = io.BytesIO(json_string.encode('utf-8'))
                     
@@ -179,8 +181,8 @@ def vector_extractor_app():
                     st.success(f"Trovati {len(gdf_filtered)} oggetti dopo il filtraggio.")
 
                 except Exception as e:
-                    st.error(f"❌ Errore durante il caricamento o il filtraggio GIS: GeoPandas non è riuscito a interpretare il dato. Dettagli: {e}")
-                    st.warning("Verifica che il contenuto sia un JSON vettoriale valido e che le geometrie siano corrette.")
+                    st.error(f"❌ Errore critico durante il caricamento o il filtraggio GIS: GeoPandas non è riuscito a interpretare il dato finale. Dettagli: {e}")
+                    st.warning("Verifica che le geometrie all'interno del file JSON siano valide (coordinate non nulle, struttura Feature corretta).")
                     return
 
                 # --- FASE 3: SALVATAGGIO IN MEMORIA (BUFFER) E PREPARAZIONE DOWNLOAD ---
