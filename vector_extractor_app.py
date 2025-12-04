@@ -6,6 +6,7 @@ import geopandas as gpd
 import json
 import tempfile
 import zipfile
+from streamlit_option_menu import option_menu # Necessario per il menu a schede
 
 # --- CONFIGURAZIONE E STILE ---
 
@@ -17,44 +18,54 @@ st.set_page_config(page_title="🗺️ Vector Data Extractor GIS", layout="wide"
 
 def vector_extractor_app():
     
-    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V2)")
-    st.subheader("Inserisci l'URL diretto intercettato (F12 Network) per estrarre e convertire i layer.")
+    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V3)")
+    st.subheader("Scegli se scaricare da URL o caricare un file JSON/GeoJSON locale per la conversione.")
     st.markdown("---")
 
-    # --- COLONNE PER IL LAYOUT ---
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        st.header("1. 🔗 Sorgente Dati Intercettata")
-        
-        # URL intercettato (l'input principale del metodo F12)
-        url_endpoint = st.text_input(
-            "URL Diretto del File GeoJSON/WFS (Copia da F12 > Network):",
-            placeholder="Esempio: https://api.example.com/data/layer?bbox=...&f=geojson",
-            help="L'indirizzo web esatto del dato vettoriale intercettato dal browser."
-        )
-        
-        # Nome del Layer (serve per il nome del file di output)
-        feature_name = st.text_input(
-            "Nome del Layer (per il salvataggio del file):",
-            placeholder="Esempio: edifici_storici",
-            value="layer_test",
-            help="Il nome che vuoi dare al file vettoriale finale."
-        )
-        
-        # Tipo di Sorgente (utile solo per la logica interna, ma non è il focus)
-        st.markdown("---")
-        source_type = st.selectbox(
-            "Tipo di Servizio (per riferimento interno):",
-            options=["GeoJSON Diretto", "WFS", "API Standard"],
-            help="Definisce il formato di richiesta che è stato intercettato."
-        )
+    # --- INPUT DATI (URL O FILE UPLOAD) ---
+    st.header("1. 🔗 Sorgente Dati")
     
+    # Menu a schede per scegliere la sorgente
+    source_method = st.radio(
+        "Seleziona il metodo di input:",
+        options=["URL Diretto", "Carica File Locale"],
+        horizontal=True
+    )
+    
+    url_endpoint = ""
+    uploaded_file = None
+    
+    if source_method == "URL Diretto":
+        st.caption("Copia l'URL del servizio dati vettoriali (intercettato con F12).")
+        url_endpoint = st.text_input(
+            "URL Diretto del File GeoJSON/WFS:",
+            placeholder="Esempio: https://api.example.com/data/layer?f=geojson",
+        )
+    else:
+        st.caption("Carica il tuo file JSON/GeoJSON locale per convertirlo in Shapefile/GeoPackage.")
+        uploaded_file = st.file_uploader(
+            "Carica file JSON/GeoJSON",
+            type=["json", "geojson"],
+            accept_multiple_files=False
+        )
+
+    # --- IMPOSTAZIONI GENERALI ---
+    feature_name = st.text_input(
+        "Nome del Layer (per il file di output):",
+        placeholder="Esempio: edifici_storici",
+        value="layer_test",
+        help="Il nome che vuoi dare al file vettoriale finale."
+    )
+    
+    st.markdown("---")
+
+    # --- COLONNE PER FILTRAGGIO E OUTPUT ---
+    col2, col3 = st.columns([1, 1])
+
     with col2:
-        st.header("2. 🎯 Filtraggio e Area di Interesse")
-        
+        st.header("2. 🎯 Filtraggio e Area")
         st.markdown("**Area di Filtro (Bounding Box WGS84)**")
-        st.caption("Usa questo filtro per limitare i dati geograficamente (lat/lon).")
+        st.caption("Filtra i dati geograficamente (lat/lon). Utile per dataset grandi.")
         
         # Input per il Bounding Box (Lat/Lon)
         bbox_min_lat = st.number_input("Latitudine Minima (Ymin)", min_value=-90.0, max_value=90.0, value=45.45, step=0.01, format="%.4f")
@@ -64,175 +75,160 @@ def vector_extractor_app():
 
         st.markdown("---")
         
-        st.markdown("**Filtro Attributo (Query SQL-Like)**")
+        st.markdown("**Filtro Attributo (Query)**")
         attribute_filter = st.text_input(
             "Filtro Attributo Aggiuntivo:",
             placeholder="Esempio: name=='Parco Sempione'",
-            help="Filtra ulteriormente gli oggetti, applicato dopo il download usando la sintassi Pandas/Python."
+            help="Filtra ulteriormente gli oggetti, applicato dopo il download (sintassi Pandas/Python)."
         )
 
-    st.markdown("---")
-    
-    # --- CONTROLLI DI OUTPUT E AZIONE (REORDERED) ---
-    st.header("3. 💾 Output e Download")
-    
-    # 1. Menu a tendina del formato (come richiesto, è il primo elemento)
-    output_format = st.selectbox(
-        "Formato di Output GIS:",
-        options=["Shapefile (.shp)", "GeoJSON", "GeoPackage (.gpkg)", "CSV (con coordinate)"],
-        index=0, # Shapefile è spesso il default
-        help="Seleziona il formato standard per il tuo software GIS."
-    )
-    
-    # Rimosso il campo Directory
-    
-    # 2. Pulsante di avvio
-    download_disabled = not (url_endpoint and feature_name)
-    
-    st.markdown("---")
-    
-    if st.button("⬇️ Avvia Estrazione, Filtro e Download", type="primary", disabled=download_disabled):
+    with col3:
+        st.header("3. 💾 Output e Conversione")
         
-        if download_disabled:
-             st.error("Per favore, inserisci l'URL diretto e il Nome del Layer.")
-             st.stop()
+        # 1. Menu a tendina del formato
+        output_format = st.selectbox(
+            "Formato di Output GIS:",
+            options=["Shapefile (.shp)", "GeoJSON", "GeoPackage (.gpkg)", "CSV (con coordinate)"],
+            index=0,
+            help="Seleziona il formato standard per il tuo software GIS."
+        )
         
-        # Nasconde il precedente output e log
-        st.empty()
-
-        with st.spinner(f"Inizio l'estrazione e la conversione del layer '{feature_name}'..."):
+        st.markdown("---")
+        
+        # 2. Pulsante di avvio
+        download_disabled = not ((url_endpoint or uploaded_file) and feature_name)
+        
+        if st.button("⬇️ Avvia Estrazione, Filtro e Conversione", type="primary", disabled=download_disabled):
             
-            url = url_endpoint
-            base_filename = feature_name
+            if download_disabled:
+                 st.error("Per favore, inserisci l'URL/carica il file e inserisci il Nome del Layer.")
+                 st.stop()
             
-            # 1. SCARICA IL DATO GREZZO GeoJSON
-            try:
-                st.info("Passaggio 1/4: Scarico l'URL intercettato...")
-                response = requests.get(url)
-                response.raise_for_status()
-                raw_geojson = response.json()
-            except requests.exceptions.RequestException as e:
-                st.error(f"❌ Errore durante il download dell'URL: {e}")
-                return
-            except json.JSONDecodeError:
-                st.error("❌ Errore: Il contenuto scaricato non è un JSON valido. Controlla l'URL.")
-                return
+            # --- INIZIO PROCESSO ---
+            st.empty()
 
-            # 2. CARICA E FILTRA I DATI
-            try:
-                st.info("Passaggio 2/4: Caricamento e filtraggio dei dati...")
+            with st.spinner(f"Inizio l'elaborazione del layer '{feature_name}'..."):
                 
-                if 'features' not in raw_geojson:
-                    st.error("❌ Errore: Il JSON scaricato non sembra contenere oggetti GeoJSON ('features').")
+                base_filename = feature_name
+                data_source = None
+                
+                # --- FASE 1: ACQUISIZIONE DATI (URL o FILE) ---
+                if source_method == "URL Diretto":
+                    st.info("Passaggio 1/4: Scarico i dati dall'URL...")
+                    data_source = url_endpoint
+                elif source_method == "Carica File Locale" and uploaded_file is not None:
+                    st.info("Passaggio 1/4: Lettura del file caricato...")
+                    # GeoPandas può leggere direttamente dal buffer BytesIO
+                    data_source = io.BytesIO(uploaded_file.read())
+                
+                if data_source is None:
+                    st.error("❌ Nessuna sorgente dati valida fornita.")
                     return
 
-                # Carica il GeoJSON in un GeoDataFrame
-                gdf = gpd.GeoDataFrame.from_features(raw_geojson)
-
-                # Filtro geografico (Bounding Box)
-                # Sintassi geopandas: gdf.cx[xmin:xmax, ymin:ymax]
-                gdf_filtered = gdf.cx[bbox_min_lon:bbox_max_lon, bbox_min_lat:bbox_max_lat]
-                
-                # Filtro per attributo (se l'utente ha inserito una query)
-                if attribute_filter:
-                    # La funzione .query() di pandas/geopandas usa sintassi Python
-                    gdf_filtered = gdf_filtered.query(attribute_filter)
-
-                if gdf_filtered.empty:
-                    st.warning("⚠️ L'area filtrata non contiene oggetti o la query attributo è troppo restrittiva.")
-                    st.stop()
-                
-                st.success(f"Trovati {len(gdf_filtered)} oggetti dopo il filtraggio.")
-
-            except Exception as e:
-                st.error(f"❌ Errore durante il filtraggio GIS (Geopandas): Controlla la sintassi del filtro attributo. Dettagli: {e}")
-                return
-
-            # 3. SALVATAGGIO IN MEMORIA (BUFFER) E PREPARAZIONE DOWNLOAD
-            
-            download_data = None
-            mime_type = "application/octet-stream"
-            label = f"Scarica {base_filename}"
-            file_name = f"{base_filename}"
-
-            if output_format == "Shapefile (.shp)":
-                st.info("Passaggio 3/4: Compressione in formato Shapefile (ZIP)...")
-                
-                zip_buffer = io.BytesIO()
-                
-                # Lo shapefile richiede un driver e deve essere zippato
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    temp_filepath = os.path.join(tmpdir, base_filename + '.shp')
-                    # Usa il driver ESRI Shapefile
-                    gdf_filtered.to_file(temp_filepath, driver='ESRI Shapefile', encoding='utf-8')
+                # --- FASE 2: CARICAMENTO E FILTRAGGIO GIS (gpd.read_file è robusto) ---
+                try:
+                    st.info("Passaggio 2/4: Caricamento e filtraggio dei dati...")
                     
-                    # Zippa tutti i file dello Shapefile (shp, shx, dbf, prj, ecc.)
-                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        for file_name_in_dir in os.listdir(tmpdir):
-                             zf.write(os.path.join(tmpdir, file_name_in_dir), arcname=file_name_in_dir)
+                    # Utilizza gpd.read_file, che supporta sia URL che buffer/percorsi
+                    gdf = gpd.read_file(data_source)
 
-                zip_buffer.seek(0)
-                download_data = zip_buffer.getvalue()
-                mime_type = "application/zip"
-                file_name = f"{base_filename}.zip"
-                label = f"Scarica {base_filename}.zip (Shapefile)"
+                    # Filtro geografico (Bounding Box)
+                    gdf_filtered = gdf.cx[bbox_min_lon:bbox_max_lon, bbox_min_lat:bbox_max_lat]
+                    
+                    # Filtro per attributo (se l'utente ha inserito una query)
+                    if attribute_filter:
+                        gdf_filtered = gdf_filtered.query(attribute_filter)
 
-            elif output_format == "GeoPackage (.gpkg)":
-                st.info("Passaggio 3/4: Conversione in GeoPackage...")
-                download_buffer = io.BytesIO()
-                # Usa il driver GPKG
-                gdf_filtered.to_file(download_buffer, driver='GPKG', encoding='utf-8')
-                download_buffer.seek(0)
+                    if gdf_filtered.empty:
+                        st.warning("⚠️ L'area filtrata non contiene oggetti o la query attributo è troppo restrittiva. Nessun download disponibile.")
+                        st.stop()
+                    
+                    st.success(f"Trovati {len(gdf_filtered)} oggetti dopo il filtraggio.")
+
+                except Exception as e:
+                    st.error(f"❌ Errore durante il caricamento o il filtraggio GIS: GeoPandas non è riuscito a interpretare il formato del dato. Dettagli: {e}")
+                    st.warning("Se hai usato un URL, prova a scaricare il JSON manualmente (F12) e a caricarlo come file locale.")
+                    return
+
+                # --- FASE 3: SALVATAGGIO IN MEMORIA (BUFFER) E PREPARAZIONE DOWNLOAD ---
                 
-                download_data = download_buffer.getvalue()
-                file_name = f"{base_filename}.gpkg"
+                download_data = None
                 mime_type = "application/octet-stream"
-                label = f"Scarica {base_filename}.gpkg"
+                label = f"Scarica {base_filename}"
+                file_name = f"{base_filename}"
 
-            else: # GeoJSON o CSV
-                st.info("Passaggio 3/4: Generazione di GeoJSON/CSV...")
-                
-                if output_format == "GeoJSON":
+                if output_format == "Shapefile (.shp)":
+                    st.info("Passaggio 3/4: Compressione in formato Shapefile (ZIP)...")
+                    
+                    zip_buffer = io.BytesIO()
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        temp_filepath = os.path.join(tmpdir, base_filename + '.shp')
+                        gdf_filtered.to_file(temp_filepath, driver='ESRI Shapefile', encoding='utf-8')
+                        
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                            for file_name_in_dir in os.listdir(tmpdir):
+                                 zf.write(os.path.join(tmpdir, file_name_in_dir), arcname=file_name_in_dir)
+
+                    zip_buffer.seek(0)
+                    download_data = zip_buffer.getvalue()
+                    mime_type = "application/zip"
+                    file_name = f"{base_filename}.zip"
+                    label = f"Scarica {base_filename}.zip (Shapefile)"
+
+                elif output_format == "GeoPackage (.gpkg)":
+                    st.info("Passaggio 3/4: Conversione in GeoPackage...")
+                    download_buffer = io.BytesIO()
+                    gdf_filtered.to_file(download_buffer, driver='GPKG', encoding='utf-8')
+                    download_buffer.seek(0)
+                    
+                    download_data = download_buffer.getvalue()
+                    file_name = f"{base_filename}.gpkg"
+                    mime_type = "application/octet-stream"
+                    label = f"Scarica {base_filename}.gpkg"
+
+                elif output_format == "GeoJSON":
+                    st.info("Passaggio 3/4: Generazione di GeoJSON...")
                     output_content = gdf_filtered.to_json(na='drop')
+                    download_data = output_content.encode('utf-8')
                     mime_type = "application/geo+json"
                     file_name = f"{base_filename}.geojson"
+                    label = f"Scarica {base_filename}.geojson"
+                
                 else: # CSV
+                    st.info("Passaggio 3/4: Generazione di CSV...")
                     gdf_csv = gdf_filtered.copy()
-                    # Esporta la geometria in testo WKT (Well-Known Text)
                     gdf_csv['WKT_Geometry'] = gdf_csv.geometry.apply(lambda x: x.wkt)
                     gdf_csv = gdf_csv.drop(columns=['geometry'])
                     output_content = gdf_csv.to_csv(index=False, na_rep='')
+                    download_data = output_content.encode('utf-8')
                     mime_type = "text/csv"
                     file_name = f"{base_filename}.csv"
+                    label = f"Scarica {base_filename}.csv"
+                    
+                # 4. PULSANTE DI DOWNLOAD FINALE
+                st.success("✅ Conversione completata! Clicca per scaricare il tuo file GIS.")
+                st.download_button(
+                    label=label,
+                    data=download_data,
+                    file_name=file_name,
+                    mime=mime_type
+                )
                 
-                download_data = output_content.encode('utf-8')
-                label = f"Scarica {file_name}"
-                
-            # 4. PULSANTE DI DOWNLOAD FINALE
-            st.success("✅ Estrazione completata! Clicca per scaricare il tuo file GIS.")
-            st.download_button(
-                label=label,
-                data=download_data,
-                file_name=file_name,
-                mime=mime_type
-            )
-            
-            # Riepilogo dei parametri usati
-            st.markdown("#### Parametri di Estrazione Eseguiti")
-            st.json({
-                "url_sorgente": url,
-                "layer_output": base_filename,
-                "bbox_filtro_wgs84": f"{bbox_min_lon}, {bbox_min_lat}, {bbox_max_lon}, {bbox_max_lat}",
-                "formato_output": output_format,
-                "oggetti_estratti_finali": len(gdf_filtered)
-            })
+                # Riepilogo dei parametri usati
+                st.markdown("#### Parametri di Estrazione Eseguiti")
+                st.json({
+                    "sorgente_utilizzata": source_method,
+                    "layer_output": base_filename,
+                    "bbox_filtro_wgs84": f"{bbox_min_lon}, {bbox_min_lat}, {bbox_max_lon}, {bbox_max_lat}",
+                    "formato_output": output_format,
+                    "oggetti_estratti_finali": len(gdf_filtered)
+                })
 
 # ----------------------------------------------------------------------
 # --------------------- PUNTO DI INGRESSO ------------------------------
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
-    # Avvisa l'utente sulle dipendenze se non riesce a trovare GeoPandas
     try:
         vector_extractor_app()
     except ImportError:
-        st.error("⚠️ **Errore di dipendenza:** Sembra che le librerie GIS (`geopandas`, `fiona`, `requests`) non siano installate. \n\nAssicurati di avere il file `requirements.txt` corretto: \n\n```\nstreamlit\nrequests\ngeopandas\nfiona\n```\n")
+        st.error("⚠️ **Errore di dipendenza:** Le librerie GIS (`geopandas`, `fiona`, `requests`) non sono installate.")
