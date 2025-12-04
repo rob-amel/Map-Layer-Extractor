@@ -6,7 +6,7 @@ import geopandas as gpd
 import json
 import tempfile
 import zipfile
-# Rimosso: from streamlit_option_menu import option_menu 
+# Nessuna dipendenza 'streamlit_option_menu'
 
 # --- CONFIGURAZIONE E STILE ---
 
@@ -18,14 +18,13 @@ st.set_page_config(page_title="🗺️ Vector Data Extractor GIS", layout="wide"
 
 def vector_extractor_app():
     
-    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V4)")
-    st.subheader("Scegli se scaricare da URL o caricare un file JSON/GeoJSON locale per la conversione.")
+    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V5)")
+    st.subheader("Massima compatibilità JSON: Carica da URL o file locale e converti.")
     st.markdown("---")
 
     # --- INPUT DATI (URL O FILE UPLOAD) ---
     st.header("1. 🔗 Sorgente Dati")
     
-    # Sostituito st.radio per rimuovere la dipendenza 'streamlit_option_menu'
     source_method = st.radio(
         "Seleziona il metodo di input:",
         options=["URL Diretto", "Carica File Locale"],
@@ -38,7 +37,7 @@ def vector_extractor_app():
     if source_method == "URL Diretto":
         st.caption("Copia l'URL del servizio dati vettoriali (intercettato con F12).")
         url_endpoint = st.text_input(
-            "URL Diretto del File GeoJSON/WFS:",
+            "URL Diretto del File JSON/WFS:",
             placeholder="Esempio: https://api.example.com/data/layer?f=geojson",
         )
     else:
@@ -67,7 +66,6 @@ def vector_extractor_app():
         st.markdown("**Area di Filtro (Bounding Box WGS84)**")
         st.caption("Filtra i dati geograficamente (lat/lon). Utile per dataset grandi.")
         
-        # Input per il Bounding Box (Lat/Lon)
         bbox_min_lat = st.number_input("Latitudine Minima (Ymin)", min_value=-90.0, max_value=90.0, value=45.45, step=0.01, format="%.4f")
         bbox_min_lon = st.number_input("Longitudine Minima (Xmin)", min_value=-180.0, max_value=180.0, value=9.15, step=0.01, format="%.4f")
         bbox_max_lat = st.number_input("Latitudine Massima (Ymax)", min_value=-90.0, max_value=90.0, value=45.50, step=0.01, format="%.4f")
@@ -85,7 +83,6 @@ def vector_extractor_app():
     with col3:
         st.header("3. 💾 Output e Conversione")
         
-        # 1. Menu a tendina del formato
         output_format = st.selectbox(
             "Formato di Output GIS:",
             options=["Shapefile (.shp)", "GeoJSON", "GeoPackage (.gpkg)", "CSV (con coordinate)"],
@@ -95,7 +92,6 @@ def vector_extractor_app():
         
         st.markdown("---")
         
-        # 2. Pulsante di avvio
         download_disabled = not ((url_endpoint or uploaded_file) and feature_name)
         
         if st.button("⬇️ Avvia Estrazione, Filtro e Conversione", type="primary", disabled=download_disabled):
@@ -104,46 +100,69 @@ def vector_extractor_app():
                  st.error("Per favore, inserisci l'URL/carica il file e inserisci il Nome del Layer.")
                  st.stop()
             
-            # --- INIZIO PROCESSO ---
             st.empty()
 
             with st.spinner(f"Inizio l'elaborazione del layer '{feature_name}'..."):
                 
                 base_filename = feature_name
-                raw_data_buffer = None
+                json_data = None # Conterrà l'oggetto JSON Python
                 
-                # --- FASE 1: ACQUISIZIONE DATI (URL o FILE) ---
-                if source_method == "URL Diretto":
-                    st.info("Passaggio 1/4: Scarico i dati dall'URL in memoria...")
-                    try:
-                        # Scarica il contenuto in memoria
+                # --- FASE 1: ACQUISIZIONE DATI E PARSING IN JSON (PIÙ ROBUSTO) ---
+                try:
+                    st.info("Passaggio 1/4: Acquisizione dei dati...")
+                    
+                    if source_method == "URL Diretto":
                         response = requests.get(url_endpoint)
                         response.raise_for_status() 
-                        # Crea un buffer BytesIO dal contenuto del download
-                        raw_data_buffer = io.BytesIO(response.content)
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"❌ Errore durante il download dell'URL: {e}. Il server potrebbe non aver risposto.")
-                        return
-                
-                elif source_method == "Carica File Locale" and uploaded_file is not None:
-                    st.info("Passaggio 1/4: Lettura del file caricato...")
-                    # Crea un buffer BytesIO dal file caricato
-                    raw_data_buffer = io.BytesIO(uploaded_file.read())
-                
-                if raw_data_buffer is None:
-                    st.error("❌ Nessuna sorgente dati valida fornita.")
+                        json_data = response.json()
+                        
+                    elif source_method == "Carica File Locale" and uploaded_file is not None:
+                        json_data = json.load(uploaded_file)
+                        
+                except requests.exceptions.RequestException as e:
+                    st.error(f"❌ Errore durante il download dell'URL: {e}. Il server potrebbe non aver risposto o il link è errato.")
+                    return
+                except json.JSONDecodeError:
+                    st.error("❌ Errore: Il contenuto scaricato/caricato non è un JSON valido.")
+                    return
+                except Exception as e:
+                    st.error(f"❌ Errore durante l'acquisizione della sorgente dati: {e}")
                     return
 
-                # --- FASE 2: CARICAMENTO E FILTRAGGIO GIS (Lettura robusta dal buffer) ---
+                # --- FASE 2: PREPARAZIONE DATI GIS (Conversione e Pulizia) ---
                 try:
-                    st.info("Passaggio 2/4: Caricamento e filtraggio dei dati...")
+                    st.info("Passaggio 2/4: Pulizia del JSON e caricamento GIS...")
                     
-                    # 1. Resetta il cursore del buffer prima della lettura
-                    raw_data_buffer.seek(0)
+                    final_geojson_content = None
+
+                    # Tenta di gestire il JSON ArcGIS (comune per gli URL che fornisci)
+                    # Spesso il payload GeoJSON o Esri è annidato sotto chiavi come 'data'
+                    if isinstance(json_data, dict):
+                        
+                        # Tentativo 1: GeoJSON standard
+                        if json_data.get('type') == 'FeatureCollection' or 'features' in json_data:
+                            final_geojson_content = json_data
+                            
+                        # Tentativo 2: Formato Esri ArcGIS (controlla la chiave 'featureSet', 'operationalLayers', etc.)
+                        elif 'featureSet' in json_data and 'features' in json_data['featureSet']:
+                             # Molto specifico per alcuni output ArcGIS
+                            st.warning("JSON identificato come formato ArcGIS. Estraggo le feature.")
+                            final_geojson_content = json_data['featureSet']
+                            
+                        elif 'features' in json_data and not json_data.get('type'):
+                             # A volte è solo un array di feature non incapsulato in FeatureCollection
+                            final_geojson_content = {"type": "FeatureCollection", "features": json_data['features']}
+
+                    if final_geojson_content is None:
+                        st.error("❌ Formato JSON non riconosciuto come GeoJSON/Esri. Il JSON non contiene la chiave 'features' o 'FeatureCollection' in una posizione standard.")
+                        return
+
+                    # Carica il GeoJSON pulito in memoria (buffer)
+                    # Questo passaggio è FONDAMENTALE per garantire che GeoPandas non usi vsicurl
+                    json_string = json.dumps(final_geojson_content)
+                    raw_data_buffer = io.BytesIO(json_string.encode('utf-8'))
                     
-                    # 2. Utilizza gpd.read_file dal buffer. 
-                    # Questo è MOLTO più affidabile rispetto a gpd.read_file(url)
-                    # e permette a Fiona/GDAL di interpretare tutti i formati supportati.
+                    # Carica il GeoJSON pulito in un GeoDataFrame
                     gdf = gpd.read_file(raw_data_buffer)
 
                     # Filtro geografico (Bounding Box)
@@ -160,13 +179,12 @@ def vector_extractor_app():
                     st.success(f"Trovati {len(gdf_filtered)} oggetti dopo il filtraggio.")
 
                 except Exception as e:
-                    st.error(f"❌ Errore durante il caricamento o il filtraggio GIS: GeoPandas non è riuscito a interpretare il formato del dato. Dettagli: {e}")
-                    st.warning("Verifica che il contenuto sia un JSON vettoriale valido (GeoJSON, TopoJSON o formato proprietario supportato da GDAL).")
+                    st.error(f"❌ Errore durante il caricamento o il filtraggio GIS: GeoPandas non è riuscito a interpretare il dato. Dettagli: {e}")
+                    st.warning("Verifica che il contenuto sia un JSON vettoriale valido e che le geometrie siano corrette.")
                     return
 
                 # --- FASE 3: SALVATAGGIO IN MEMORIA (BUFFER) E PREPARAZIONE DOWNLOAD ---
                 
-                # ... (Il codice di salvataggio in Shapefile, GeoPackage, GeoJSON e CSV rimane invariato) ...
                 download_data = None
                 mime_type = "application/octet-stream"
                 label = f"Scarica {base_filename}"
