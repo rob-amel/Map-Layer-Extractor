@@ -6,7 +6,7 @@ import geopandas as gpd
 import json
 import tempfile
 import zipfile
-# Nessuna dipendenza esterna oltre le basi
+from shapely.geometry import Point 
 
 # --- CONFIGURAZIONE E STILE ---
 
@@ -18,7 +18,7 @@ st.set_page_config(page_title="🗺️ Vector Data Extractor GIS", layout="wide"
 
 def vector_extractor_app():
     
-    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V6)")
+    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V8)")
     st.subheader("Massima compatibilità JSON: Carica da URL o file locale e converti.")
     st.markdown("---")
 
@@ -35,10 +35,10 @@ def vector_extractor_app():
     uploaded_file = None
     
     if source_method == "URL Diretto":
-        st.caption("Copia l'URL del servizio dati vettoriali (intercettato con F12).")
+        st.caption("Copia l'URL del servizio dati vettoriali. Per i servizi ArcGIS, usa l'URL che termina con `/FeatureServer/0`.")
         url_endpoint = st.text_input(
             "URL Diretto del File JSON/WFS:",
-            placeholder="Esempio: https://api.example.com/data/layer?f=geojson",
+            placeholder="Esempio: https://services.arcgis.com/layer/FeatureServer/0",
         )
     else:
         st.caption("Carica il tuo file JSON/GeoJSON locale per convertirlo in Shapefile/GeoPackage.")
@@ -107,16 +107,29 @@ def vector_extractor_app():
                 base_filename = feature_name
                 json_data = None 
                 
-                # --- FASE 1: ACQUISIZIONE DATI E PARSING IN JSON ---
+                # --- FASE 1: ACQUISIZIONE DATI E PARSING IN JSON (CON GESTIONE FEATURESERVER) ---
                 try:
                     st.info("Passaggio 1/4: Acquisizione dei dati...")
                     
                     if source_method == "URL Diretto":
-                        response = requests.get(url_endpoint)
+                        target_url = url_endpoint
+                        
+                        # Gestione degli endpoint ArcGIS FeatureServer (necessita di query)
+                        if "FeatureServer" in url_endpoint and "/query" not in url_endpoint.lower():
+                            st.info("Rilevato URL FeatureServer ArcGIS. Aggiungo la query GeoJSON standard...")
+                            # Questo URL è un endpoint del servizio (FeatureServer/0, FeatureServer/1, etc.), 
+                            # non il dato grezzo. Dobbiamo aggiungere la query per ottenere il GeoJSON completo.
+                            if url_endpoint.endswith("/"):
+                                target_url = url_endpoint + "query?f=geojson&where=1=1&outFields=*"
+                            else:
+                                target_url = url_endpoint + "/query?f=geojson&where=1=1&outFields=*"
+                                
+                        response = requests.get(target_url)
                         response.raise_for_status() 
                         json_data = response.json()
                         
                     elif source_method == "Carica File Locale" and uploaded_file is not None:
+                        # Se l'utente carica il file di configurazione, la Fase 2 fallirà, ma questo è l'unico modo.
                         json_data = json.load(uploaded_file)
                         
                 except requests.exceptions.RequestException as e:
@@ -133,39 +146,58 @@ def vector_extractor_app():
                 try:
                     st.info("Passaggio 2/4: Pulizia del JSON e caricamento GIS...")
                     
-                    final_geojson_content = None
-
-                    if isinstance(json_data, dict):
+                    gdf = None
+                    
+                    # TENTATIVO 1: Il JSON è una LISTA di oggetti con campi lat/lon (Caso geoData.json)
+                    if isinstance(json_data, list) and all('lat' in d and 'lon' in d for d in json_data if isinstance(d, dict)):
+                        st.warning("JSON identificato come lista di oggetti con campi lat/lon. Conversione manuale in GeoDataFrame...")
                         
-                        # Tentativo 1: GeoJSON standard
+                        geometry = [Point(d['lon'], d['lat']) for d in json_data if 'lat' in d and 'lon' in d]
+                        
+                        clean_data = []
+                        for d in json_data:
+                            # Evita di includere le colonne di coordinate come attributi doppioni
+                            d_clean = {k: v for k, v in d.items() if k not in ['lat', 'lon']}
+                            clean_data.append(d_clean)
+                            
+                        gdf = gpd.GeoDataFrame(clean_data, geometry=geometry, crs="EPSG:4326")
+                        
+                    # TENTATIVO 2: Il JSON è un DIZIONARIO (GeoJSON standard o annidato)
+                    elif isinstance(json_data, dict):
+                        
+                        final_geojson_content = None
+                        
+                        # Tenta 2.1: GeoJSON standard
                         if json_data.get('type') == 'FeatureCollection' or 'features' in json_data:
                             final_geojson_content = json_data
                             
-                        # Tentativo 2: JSON Annidato (CASO SPECIFICO: geoData)
-                        elif 'geoData' in json_data and isinstance(json_data['geoData'], list):
-                            st.warning("JSON identificato con chiave 'geoData'. Sto incapsulando la lista in un GeoJSON Collection.")
-                            # Assumiamo che 'geoData' sia una lista di Feature GeoJSON
+                        # Tenta 2.2: JSON Annidato (Caso 'geoData' o altre chiavi comuni)
+                        if final_geojson_content is None and 'geoData' in json_data and isinstance(json_data['geoData'], list):
+                            st.warning("JSON identificato con chiave 'geoData'. Incapsulamento in GeoJSON Collection.")
                             final_geojson_content = {"type": "FeatureCollection", "features": json_data['geoData']}
                             
-                        # Tentativo 3: Formato ArcGIS Esri (comune per il primo URL fornito)
-                        elif 'featureSet' in json_data and 'features' in json_data['featureSet']:
+                        # Tenta 2.3: Formato ArcGIS Esri (Contenitore di features)
+                        if final_geojson_content is None and 'featureSet' in json_data and 'features' in json_data['featureSet']:
                             st.warning("JSON identificato come formato ArcGIS. Estraggo le feature.")
                             final_geojson_content = {"type": "FeatureCollection", "features": json_data['featureSet']['features']}
-                            
-                        elif 'features' in json_data and not json_data.get('type'):
+
+                        # Tenta 2.4: Lista di Feature non incapsulata
+                        if final_geojson_content is None and 'features' in json_data and not json_data.get('type'):
                             st.warning("JSON identificato come lista di Feature non incapsulata. Aggiungo FeatureCollection.")
                             final_geojson_content = {"type": "FeatureCollection", "features": json_data['features']}
 
-                    if final_geojson_content is None:
-                        st.error("❌ Formato JSON non riconosciuto. Il JSON non contiene 'features' in una posizione standard o sotto la chiave 'geoData'.")
-                        st.stop()
 
-                    # Carica il GeoJSON pulito in memoria (buffer)
-                    json_string = json.dumps(final_geojson_content)
-                    raw_data_buffer = io.BytesIO(json_string.encode('utf-8'))
+                        # Se abbiamo trovato il GeoJSON pulito, lo carichiamo
+                        if final_geojson_content:
+                            json_string = json.dumps(final_geojson_content)
+                            raw_data_buffer = io.BytesIO(json_string.encode('utf-8'))
+                            gdf = gpd.read_file(raw_data_buffer)
+                        
+                    if gdf is None:
+                        st.error("❌ Formato JSON non riconosciuto. Il contenuto non è né un GeoJSON, né una lista di oggetti con lat/lon. Se hai caricato un file, potrebbe essere un file di configurazione (come datapolimi.json).")
+                        st.stop()
                     
-                    # Carica il GeoJSON pulito in un GeoDataFrame
-                    gdf = gpd.read_file(raw_data_buffer)
+                    # --- APPLICAZIONE DEI FILTRI ---
 
                     # Filtro geografico (Bounding Box)
                     gdf_filtered = gdf.cx[bbox_min_lon:bbox_max_lon, bbox_min_lat:bbox_max_lat]
@@ -267,4 +299,4 @@ if __name__ == "__main__":
     try:
         vector_extractor_app()
     except ImportError:
-        st.error("⚠️ **Errore di dipendenza:** Le librerie GIS (`geopandas`, `fiona`, `requests`) non sono installate.")
+        st.error("⚠️ **Errore di dipendenza:** Le librerie GIS (`geopandas`, `fiona`, `requests`, `shapely`) non sono installate.")
