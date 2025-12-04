@@ -4,7 +4,6 @@ import io
 
 # --- CONFIGURAZIONE E STILE ---
 
-# L'emoji del mappamondo è appropriata per il contesto GIS
 st.set_page_config(page_title="🗺️ Vector Data Extractor GIS", layout="wide")
 
 # ----------------------------------------------------------------------
@@ -13,45 +12,46 @@ st.set_page_config(page_title="🗺️ Vector Data Extractor GIS", layout="wide"
 
 def vector_extractor_app():
     
-    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online")
-    st.subheader("Configura la sorgente e l'area per l'estrazione dei layer vettoriali.")
+    st.title("🗺️ Estrattore di Dati Vettoriali GIS Online (V2)")
+    st.subheader("Inserisci l'URL diretto intercettato (F12 Network) per estrarre e convertire i layer.")
     st.markdown("---")
 
     # --- COLONNE PER IL LAYOUT ---
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.header("1. 🔗 Sorgente Dati e Layer")
+        st.header("1. 🔗 Sorgente Dati Intercettata")
         
-        # Tipo di Sorgente
-        source_type = st.selectbox(
-            "Tipo di Sorgente Vettoriale:",
-            options=["WFS (Web Feature Service)", "API Vettoriale Standard (GeoJSON)", "Overpass API (OpenStreetMap)"],
-            help="Seleziona il tipo di servizio che fornisce i dati vettoriali."
-        )
-        
-        # URL del Servizio
+        # URL intercettato (l'input principale del metodo F12)
         url_endpoint = st.text_input(
-            "URL del Servizio/Endpoint:",
-            placeholder="Esempio: https://geoserver.example.com/wfs",
-            help="L'indirizzo del server che ospita il servizio dati."
+            "URL Diretto del File GeoJSON/WFS (Copia da F12 > Network):",
+            placeholder="Esempio: https://api.example.com/data/layer?bbox=...&format=geojson",
+            help="L'indirizzo web esatto del dato vettoriale intercettato dal browser."
         )
         
-        # Nome del Layer
+        # Nome del Layer (serve per il nome del file di output)
         feature_name = st.text_input(
-            "Nome del Layer (Feature Type):",
-            placeholder="Esempio: strade_principali, edifici_storici",
-            help="Il nome specifico del layer o della tabella da estrarre."
+            "Nome del Layer (per il salvataggio del file):",
+            placeholder="Esempio: edifici_storici",
+            help="Il nome che vuoi dare al file vettoriale finale."
+        )
+        
+        # Tipo di Sorgente (utile solo per la logica interna, ma non è il focus)
+        st.markdown("---")
+        source_type = st.selectbox(
+            "Tipo di Servizio (per riferimento interno):",
+            options=["GeoJSON Diretto", "WFS", "API Standard"],
+            help="Definisce il formato di richiesta che è stato intercettato."
         )
     
     with col2:
         st.header("2. 🎯 Filtraggio e Area di Interesse")
         
-        # Controlli di Filtraggio (Definizione del Contenuto)
-        st.markdown("**Area di Interesse (Bounding Box WGS84)**")
+        # La logica di filtraggio è ancora utile se l'URL non contiene già un BBox
+        st.markdown("**Area di Filtro (Bounding Box WGS84)**")
+        st.caption("Usa questo filtro se l'URL intercettato fornisce troppi dati e devi limitarli geograficamente. Se l'URL è già filtrato, puoi lasciare i valori di default.")
         
         # Input per il Bounding Box (Lat/Lon)
-        # Ho impostato dei valori predefiniti per Milano, Italia
         bbox_min_lat = st.number_input("Latitudine Minima (Ymin)", min_value=-90.0, max_value=90.0, value=45.45, step=0.01, format="%.4f")
         bbox_min_lon = st.number_input("Longitudine Minima (Xmin)", min_value=-180.0, max_value=180.0, value=9.15, step=0.01, format="%.4f")
         bbox_max_lat = st.number_input("Latitudine Massima (Ymax)", min_value=-90.0, max_value=90.0, value=45.50, step=0.01, format="%.4f")
@@ -59,23 +59,25 @@ def vector_extractor_app():
 
         st.markdown("---")
         
-        st.markdown("**Filtro Attributo (Clausola WHERE)**")
+        st.markdown("**Filtro Attributo (Query SQL-Like)**")
         attribute_filter = st.text_input(
-            "Query di Filtraggio:",
-            placeholder="Esempio: nome='Ponte Vecchio' AND tipo='storico'",
-            help="Filtra gli oggetti in base agli attributi (sintassi dipende dal servizio API)."
+            "Filtro Attributo Aggiuntivo:",
+            placeholder="Esempio: name='Parco Sempione'",
+            help="Filtra ulteriormente gli oggetti dopo il download, usando Geopandas."
         )
 
     st.markdown("---")
     
-    # --- CONTROLLI DI OUTPUT E AZIONE (A PIENA LARGHEZZA) ---
+    # --- CONTROLLI DI OUTPUT E AZIONE ---
     st.header("3. 💾 Output e Download")
     
+    # In Streamlit Cloud non puoi specificare una directory locale persistente,
+    # quindi l'output sarà temporaneo o un download diretto.
     output_dir = st.text_input(
-        "Directory di Salvataggio Locale (Nota: In Streamlit Cloud, salva in una cartella temporanea):",
+        "Directory (Nome Base per Salvataggio):",
         placeholder="./gis_downloads",
-        value="./gis_downloads", # Valore predefinito
-        help="Il percorso relativo o assoluto dove verrà salvato il file vettoriale."
+        value="./gis_downloads",
+        help="In Streamlit Cloud, questo è solo un riferimento. Il download sarà probabilmente un pulsante diretto."
     )
 
     col_output_format, col_action = st.columns([1, 1])
@@ -88,64 +90,51 @@ def vector_extractor_app():
         )
     
     with col_action:
-        # Controlli essenziali per abilitare il pulsante
-        download_disabled = not (url_endpoint and output_dir and feature_name)
+        download_disabled = not (url_endpoint and feature_name)
         
-        if st.button("⬇️ Avvia Estrazione e Download", type="primary", disabled=download_disabled):
-            
-            # --- VALIDAZIONE E PREPARAZIONE ---
+        if st.button("⬇️ Avvia Estrazione, Filtro e Download", type="primary", disabled=download_disabled):
             
             if download_disabled:
-                 st.error("Per favore, inserisci l'URL del Servizio, la Directory e il Nome del Layer.")
+                 st.error("Per favore, inserisci l'URL diretto e il Nome del Layer.")
                  return
 
-            # Esecuzione del Bounding Box
-            bbox = f"{bbox_min_lon},{bbox_min_lat},{bbox_max_lon},{bbox_max_lat}"
-            
             # --- LOGICA DI ESECUZIONE (PLACEHOLDER) ---
             
-            st.info("Inizio l'estrazione dei dati. **ATTENZIONE:** La logica di download con `requests` e `geopandas` deve ancora essere implementata qui.")
+            st.info("Inizio l'estrazione dei dati.")
             
             st.code(f"""
-# 1. Creare la directory di output (se non esiste)
-# os.makedirs("{output_dir}", exist_ok=True)
+# 1. Scarica l'URL intercettato:
+# response = requests.get('{url_endpoint}')
+# raw_geojson = response.json()
 
-# 2. Costruire la richiesta WFS/API (es. per WFS)
-# wfs_params = {{
-#     'service': 'WFS',
-#     'request': 'GetFeature',
-#     'version': '1.1.0',
-#     'typeName': '{feature_name}',
-#     'bbox': '{bbox}', 
-#     'outputFormat': 'application/json' # Formato richiesto
-# }}
+# 2. Carica in GeoPandas:
+# gdf = geopandas.GeoDataFrame.from_features(raw_geojson)
 
-# 3. Eseguire la richiesta:
-# response = requests.get("{url_endpoint}", params=wfs_params)
-# data = response.json()
+# 3. Filtra geograficamente (se necessario) e per attributo (se specificato)
+# Filtro_bbox = (gdf.cx[{bbox_min_lon}:{bbox_max_lon}, {bbox_min_lat}:{bbox_max_lat}]) 
+# gdf_filtered = Filtro_bbox.query('{attribute_filter}') # Se c'è un filtro attributo
 
-# 4. Caricare i dati in GeoPandas e salvare:
-# gdf = geopandas.GeoDataFrame.from_features(data)
-# output_filepath = os.path.join("{output_dir}", "{feature_name}.{output_format.split(' ')[0].lower()}")
-# gdf.to_file(output_filepath, driver='<Driver Specifico>')
+# 4. Salva nel formato GIS finale:
+# output_filename = '{feature_name}.{output_format.split(" ")[0].lower()}'
+# # Esempio di salvataggio in un buffer per un pulsante di download Streamlit:
+# # buffer = io.BytesIO()
+# # gdf_filtered.to_file(buffer, driver='<Driver Specifico>')
+# # st.download_button(...)
             """, language="python")
 
             
             st.success("✅ Interfaccia testata!")
-            st.warning("Per far funzionare il download, **devi** implementare il codice Python qui sopra, installare `geopandas` e `requests` e avviare il processo di estrazione.")
+            st.warning("Ricorda: Per funzionare, devi implementare il codice che usa **`requests`** e **`geopandas`** all'interno del blocco `if st.button(...)`.")
             
             # Riepilogo dei parametri usati
+            st.markdown("#### Parametri di Estrazione")
             st.json({
-                "source": source_type,
-                "url": url_endpoint,
-                "layer": feature_name,
-                "bbox_wgs84": bbox,
-                "filter_query": attribute_filter or "Nessuno",
-                "format_output": output_format
+                "url_sorgente": url_endpoint,
+                "layer_output": feature_name,
+                "bbox_filtro_wgs84": f"{bbox_min_lon}, {bbox_min_lat}, {bbox_max_lon}, {bbox_max_lat}",
+                "formato_output": output_format
             })
-            
-# ----------------------------------------------------------------------
-# --------------------- PUNTO DI INGRESSO ------------------------------
+
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     vector_extractor_app()
