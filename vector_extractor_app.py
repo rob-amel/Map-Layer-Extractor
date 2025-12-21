@@ -266,7 +266,8 @@ def vector_extractor_app():
             else: # CSV
                 st.info("Step 3/3: Generating CSV...")
                 gdf_csv = gdf_filtered.copy()
-                gdf_csv['WKT_Geometry'] = gdf_csv.geometry.apply(lambda x: x.wkt) 
+                gdf_csv['WKT_Geometry'] = gdf_csv.geometry.apply(lambda x: x.wkt if x is not None else None)
+                gdf_csv = gdf_csv.dropna(subset=['geometry']) 
                 gdf_csv = gdf_csv.drop(columns=['geometry'])
                 output_content = gdf_csv.to_csv(index=False, na_rep='')
                 download_data = output_content.encode('utf-8')
@@ -301,3 +302,4 @@ if __name__ == "__main__":
         vector_extractor_app()
     except ImportError:
         st.error("⚠️ **Dependency Error:** Required GIS libraries are not installed.")
+
