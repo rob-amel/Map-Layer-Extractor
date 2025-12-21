@@ -3,3 +3,4 @@ requests
 geopandas
 fiona
 streamlit_option_menu
+xlsxwriter
