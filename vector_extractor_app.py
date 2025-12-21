@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import geopandas as gpd
 import io
-import fiona
+import os
+import shutil
+import tempfile
 from io import BytesIO
 
 # --- CONFIGURAZIONE INTERFACCIA ---
@@ -20,88 +22,116 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗺️ Universal Map Layer Extractor")
-st.markdown("""
-Questo strumento estrae dati da layer vettoriali (**GeoJSON, KML, Shapefile**) e li converte in un Excel leggibile, 
-includendo coordinate, aree e tutte le descrizioni originali.
-""")
+st.title("🗺️ Universal Map Layer Extractor Pro")
+st.markdown("Estrai, analizza e converti layer geografici in molteplici formati senza errori.")
 
-# --- FUNZIONE CORE DI ESTRAZIONE ---
-def extract_map_data(source):
+# --- FUNZIONI DI SUPPORTO ---
+def prepare_download(gdf, format_choice):
+    """Gestisce la creazione dei file per il download nei vari formati."""
+    tmpdir = tempfile.mkdtemp()
+    
     try:
-        # 1. Caricamento del layer (gestisce URL o file caricati)
-        gdf = gpd.read_file(source)
+        if format_choice == "Excel":
+            output = io.BytesIO()
+            # Puliamo per Excel (rimuoviamo l'oggetto geometria grezzo)
+            df_excel = pd.DataFrame(gdf.drop(columns='geometry'))
+            df_excel['WKT_Geometry'] = gdf.geometry.apply(lambda x: x.wkt if x is not None else None)
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_excel.to_excel(writer, index=False)
+            return output.getvalue(), "layer_export.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-        # 2. Pulizia: Rimuoviamo righe dove la geometria è completamente assente
-        gdf = gdf.dropna(subset=['geometry'])
+        elif format_choice == "CSV":
+            df_csv = pd.DataFrame(gdf.drop(columns='geometry'))
+            df_csv['WKT_Geometry'] = gdf.geometry.apply(lambda x: x.wkt if x is not None else None)
+            return df_csv.to_csv(index=False).encode('utf-8'), "layer_export.csv", "text/csv"
 
-        # 3. Calcolo Coordinate (Centroide)
-        # Anche se sono poligoni, estraiamo un punto Lat/Lon semplice per il CSV/Excel
-        gdf['latitude'] = gdf.geometry.centroid.y
-        gdf['longitude'] = gdf.geometry.centroid.x
+        elif format_choice == "GeoJSON":
+            return gdf.to_json().encode('utf-8'), "layer_export.geojson", "application/json"
 
-        # 4. Calcolo Area (Approssimativa in gradi quadrati)
-        gdf['geometry_area'] = gdf.geometry.area
+        elif format_choice == "GeoPackage (GPKG)":
+            path = os.path.join(tmpdir, "export.gpkg")
+            gdf.to_file(path, driver="GPKG")
+            with open(path, "rb") as f:
+                data = f.read()
+            return data, "layer_export.gpkg", "application/octet-stream"
 
-        # 5. Conversione Geometria in Testo (WKT)
-        # PROTEZIONE ATTRIBUTERROR: Controlliamo se x è valido prima di chiamare .wkt
-        gdf['WKT_Format'] = gdf.geometry.apply(lambda x: x.wkt if x is not None else "No Geometry")
-
-        # 6. Preparazione DataFrame Finale
-        # Manteniamo TUTTE le colonne originali (descrizioni, target, date) 
-        # e rimuoviamo solo l'oggetto geometria grezzo
-        df_final = pd.DataFrame(gdf.drop(columns='geometry'))
-        
-        return df_final
+        elif format_choice == "ESRI Shapefile":
+            # Lo Shapefile richiede più file, creiamo uno ZIP
+            path = os.path.join(tmpdir, "export_shp")
+            os.makedirs(path)
+            gdf.to_file(os.path.join(path, "export.shp"))
+            shutil.make_archive(path, 'zip', path)
+            with open(f"{path}.zip", "rb") as f:
+                data = f.read()
+            return data, "layer_export_shp.zip", "application/zip"
 
     except Exception as e:
-        st.error(f"❌ Errore durante l'estrazione: {e}")
+        st.error(f"Errore nella generazione del file: {e}")
+        return None, None, None
+    finally:
+        shutil.rmtree(tmpdir)
+
+# --- FUNZIONE CORE DI ANALISI ---
+def process_data(source):
+    try:
+        gdf = gpd.read_file(source)
+        # Protezione AttributeError: pulizia geometrie nulle
+        gdf = gdf.dropna(subset=['geometry'])
+        
+        # Estrazione automatica metadati utili
+        gdf['latitude'] = gdf.geometry.centroid.y
+        gdf['longitude'] = gdf.geometry.centroid.x
+        gdf['area_approx'] = gdf.geometry.area
+        
+        return gdf
+    except Exception as e:
+        st.error(f"Impossibile leggere il layer: {e}")
         return None
 
 # --- INTERFACCIA UTENTE ---
-st.info("💡 Inserisci l'URL di un file GeoJSON (es. Palestine Wheel) o carica un file locale.")
-
-input_type = st.radio("Scegli la sorgente:", ["URL", "Carica File locale"])
-
-source_data = None
-
+input_type = st.sidebar.radio("Sorgente dati:", ["URL", "File Locale"])
 if input_type == "URL":
-    url = st.text_input("Inserisci URL GeoJSON/KML:", value="https://pw-israeli-strikes.vercel.app/target.geojson")
-    if url:
-        source_data = url
+    source = st.sidebar.text_input("URL (GeoJSON/KML):", value="https://pw-israeli-strikes.vercel.app/target.geojson")
 else:
-    uploaded_file = st.file_uploader("Carica file geografico", type=['geojson', 'kml', 'zip', 'json'])
-    if uploaded_file:
-        source_data = uploaded_file
+    source = st.sidebar.file_uploader("Carica File:", type=['geojson', 'kml', 'json', 'zip', 'gpkg'])
 
-# --- AZIONE DI ESTRAZIONE ---
-if st.button("🚀 AVVIA ESTRAZIONE LAYER", type="primary"):
-    if source_data:
-        with st.spinner("Analisi geometrie e recupero metadati in corso..."):
-            df = extract_map_data(source_data)
+if source:
+    with st.spinner("Analisi in corso..."):
+        gdf = process_data(source)
+        
+        if gdf is not None:
+            st.success(f"Trovati {len(gdf)} elementi con relative descrizioni.")
             
-            if df is not None:
-                st.success(f"✅ Estrazione completata! Trovati {len(df)} elementi.")
-                
-                # Anteprima dei dati
-                st.subheader("📊 Anteprima Dati Estratti")
-                st.dataframe(df, use_container_width=True)
-
-                # --- GENERAZIONE EXCEL ---
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False, sheet_name='LayerData')
-                
-                st.markdown("---")
-                st.download_button(
-                    label="📥 SCARICA DATI IN EXCEL (ROSSO)",
-                    data=output.getvalue(),
-                    file_name=f"estrazione_mappa_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            # Anteprima
+            st.subheader("📊 Anteprima Dati")
+            st.dataframe(gdf.drop(columns='geometry').head(10), use_container_width=True)
+            
+            # Opzioni di Esportazione
+            st.markdown("---")
+            st.subheader("📥 Opzioni di Download")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                format_choice = st.selectbox(
+                    "Scegli il formato di uscita:",
+                    ["Excel", "CSV", "GeoJSON", "GeoPackage (GPKG)", "ESRI Shapefile"]
                 )
-    else:
-        st.warning("Per favore, inserisci un URL o carica un file.")
+            
+            with col2:
+                data, filename, mime = prepare_download(gdf, format_choice)
+                if data:
+                    st.download_button(
+                        label=f"SCARICA {format_choice.upper()}",
+                        data=data,
+                        file_name=filename,
+                        mime=mime
+                    )
 
-# --- FOOTER ---
-st.markdown("---")
-st.caption("Strumento ottimizzato per gestire geometrie complesse e valori nulli.")
+# --- REQUISITI (da mettere in requirements.txt) ---
+# streamlit
+# pandas
+# geopandas
+# shapely
+# fiona
+# pyogrio
+# xlsxwriter
